@@ -9,7 +9,6 @@ from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from powerdns_api_proxy.config import (
-    check_append_only_records_intact,
     check_pdns_search_allowed,
     check_pdns_cryptokeys_allowed,
     check_pdns_tsigkeys_allowed,
@@ -363,8 +362,8 @@ async def update_zone_rrset(
         raise ZoneNotAllowedException()
     zone = environment.get_zone_if_allowed(zone_id)
     payload = await request.json()
-    ensure_rrsets_request_allowed(zone, payload)
 
+    existing_rrsets = []
     if zone.append_only:
         zone_resp = await pdns.get(f"/api/v1/servers/{server_id}/zones/{zone_id}")
         zone_pdns_response = await handle_pdns_response(zone_resp)
@@ -374,16 +373,8 @@ async def update_zone_rrset(
             if isinstance(zone_pdns_response.data, dict)
             else []
         )
-        for rrset in payload["rrsets"]:
-            if rrset.get("changetype") == "REPLACE":
-                if not check_append_only_records_intact(existing_rrsets, rrset):
-                    logger.info(
-                        f"RRSET {rrset['name']} append_only violation in zone {zone.name}"
-                    )
-                    raise HTTPException(
-                        403,
-                        f"RRSET {rrset['name']} append_only violation: existing records would be removed",
-                    )
+
+    ensure_rrsets_request_allowed(zone, payload, existing_rrsets)
 
     resp = await pdns.patch(
         f"/api/v1/servers/{server_id}/zones/{zone_id}",

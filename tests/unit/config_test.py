@@ -496,6 +496,65 @@ def test_rrset_request_not_allowed_false_zone():
     assert err.value.detail == "RRSET example1.test-zone2.example.com. not allowed"
 
 
+def test_ensure_rrsets_request_allowed_append_only_superset():
+    """ensure_rrsets_request_allowed passes when existing records are all preserved."""
+    zone = ProxyConfigZone(name="test-zone.example.com.", append_only=True)
+    existing_rrsets = [
+        {
+            "name": "entry1.test-zone.example.com.",
+            "type": "TXT",
+            "records": [{"content": '"record-1"', "disabled": False}],
+        }
+    ]
+    request: RRSETRequest = {
+        "rrsets": [
+            {
+                "name": "entry1.test-zone.example.com.",
+                "type": "TXT",
+                "changetype": "REPLACE",
+                "ttl": 300,
+                "records": [
+                    {"content": '"record-1"', "disabled": False},
+                    {"content": '"record-2"', "disabled": False},
+                ],
+                "comments": [],
+            }
+        ]
+    }
+    assert ensure_rrsets_request_allowed(zone, request, existing_rrsets)
+
+
+def test_ensure_rrsets_request_allowed_append_only_drops_record():
+    """ensure_rrsets_request_allowed raises 403 when existing records would be removed."""
+    zone = ProxyConfigZone(name="test-zone.example.com.", append_only=True)
+    existing_rrsets = [
+        {
+            "name": "entry1.test-zone.example.com.",
+            "type": "TXT",
+            "records": [
+                {"content": '"record-1"', "disabled": False},
+                {"content": '"record-2"', "disabled": False},
+            ],
+        }
+    ]
+    request: RRSETRequest = {
+        "rrsets": [
+            {
+                "name": "entry1.test-zone.example.com.",
+                "type": "TXT",
+                "changetype": "REPLACE",
+                "ttl": 300,
+                "records": [{"content": '"record-2"', "disabled": False}],
+                "comments": [],
+            }
+        ]
+    }
+    with pytest.raises(HTTPException) as err:
+        ensure_rrsets_request_allowed(zone, request, existing_rrsets)
+    assert err.value.status_code == 403
+    assert "append_only violation" in err.value.detail
+
+
 def test_check_acme_record_allowed_all_records():
     zone = ProxyConfigZone(name="test-zone.example.com", all_records=True)
     rrset = RRSET(

@@ -255,8 +255,16 @@ def check_pdns_tsigkeys_allowed(environment: ProxyConfigEnvironment) -> bool:
     return False
 
 
-def ensure_rrsets_request_allowed(zone: ProxyConfigZone, request: RRSETRequest) -> bool:
-    """Raises HTTPException if RRSET is not allowed"""
+def ensure_rrsets_request_allowed(
+    zone: ProxyConfigZone,
+    request: RRSETRequest,
+    existing_rrsets: list[dict] = [],
+) -> bool:
+    """Raises HTTPException if RRSET is not allowed.
+
+    `existing_rrsets` should be passed for append_only zones so that REPLACE
+    changesets can be verified not to remove any currently live records.
+    """
     if zone.read_only:
         logger.info("RRSET update not allowed with read only token")
         raise HTTPException(403, "RRSET update not allowed with read only token")
@@ -264,5 +272,14 @@ def ensure_rrsets_request_allowed(zone: ProxyConfigZone, request: RRSETRequest) 
         if not check_rrset_allowed(zone, rrset):
             logger.info(f"RRSET {rrset['name']} not allowed in zone {zone.name}")
             raise HTTPException(403, f"RRSET {rrset['name']} not allowed")
+        if zone.append_only and rrset.get("changetype") == "REPLACE":
+            if not check_append_only_records_intact(existing_rrsets, rrset):
+                logger.info(
+                    f"RRSET {rrset['name']} append_only violation in zone {zone.name}"
+                )
+                raise HTTPException(
+                    403,
+                    f"RRSET {rrset['name']} append_only violation: existing records would be removed",
+                )
         logger.info(f"RRSET {rrset['name']} allowed")
     return True
