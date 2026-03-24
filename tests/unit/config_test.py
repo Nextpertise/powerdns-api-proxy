@@ -743,9 +743,8 @@ def test_global_read_only_with_explicit_zones_keeps_zone_permissions():
     assert "readonly.com" in env._zones_lookup
 
 
-# --- allowed_record_types tests ---
-
 def test_check_rrset_allowed_record_type_allowed():
+    """A matching record type is allowed when allowed_record_types is set."""
     zone = ProxyConfigZone(name="test-zone.example.com.", allowed_record_types=["TXT"])
     rrset: RRSET = {
         "name": "entry1.test-zone.example.com.",
@@ -759,6 +758,7 @@ def test_check_rrset_allowed_record_type_allowed():
 
 
 def test_check_rrset_not_allowed_record_type_mismatch():
+    """A record type not in allowed_record_types is blocked."""
     zone = ProxyConfigZone(name="test-zone.example.com.", allowed_record_types=["TXT"])
     rrset: RRSET = {
         "name": "entry1.test-zone.example.com.",
@@ -772,6 +772,7 @@ def test_check_rrset_not_allowed_record_type_mismatch():
 
 
 def test_check_rrset_allowed_multiple_record_types():
+    """All types in allowed_record_types are permitted; types outside are blocked."""
     zone = ProxyConfigZone(
         name="test-zone.example.com.", allowed_record_types=["TXT", "AAAA"]
     )
@@ -798,6 +799,7 @@ def test_check_rrset_allowed_multiple_record_types():
 
 
 def test_check_rrset_allowed_no_type_restriction():
+    """All record types are allowed when allowed_record_types is not set."""
     zone = ProxyConfigZone(name="test-zone.example.com.")
     for rtype in ["A", "AAAA", "TXT", "MX", "CNAME"]:
         rrset: RRSET = {
@@ -811,9 +813,8 @@ def test_check_rrset_allowed_no_type_restriction():
         assert check_rrset_allowed(zone, rrset)
 
 
-# --- append_only tests ---
-
 def test_check_rrset_append_only_allows_replace():
+    """REPLACE changesets are allowed when append_only is set."""
     zone = ProxyConfigZone(name="test-zone.example.com.", append_only=True)
     rrset: RRSET = {
         "name": "entry1.test-zone.example.com.",
@@ -827,6 +828,7 @@ def test_check_rrset_append_only_allows_replace():
 
 
 def test_check_rrset_append_only_blocks_delete():
+    """DELETE changesets are blocked when append_only is set."""
     zone = ProxyConfigZone(name="test-zone.example.com.", append_only=True)
     rrset: RRSET = {
         "name": "entry1.test-zone.example.com.",
@@ -840,6 +842,7 @@ def test_check_rrset_append_only_blocks_delete():
 
 
 def test_check_rrset_not_append_only_allows_delete():
+    """DELETE changesets are allowed when append_only is not set."""
     zone = ProxyConfigZone(name="test-zone.example.com.")
     rrset: RRSET = {
         "name": "entry1.test-zone.example.com.",
@@ -852,9 +855,8 @@ def test_check_rrset_not_append_only_allows_delete():
     assert check_rrset_allowed(zone, rrset)
 
 
-# --- combined allowed_record_types + append_only tests ---
-
 def test_check_rrset_txt_append_only_allowed():
+    """TXT REPLACE is allowed when both allowed_record_types=["TXT"] and append_only are set."""
     zone = ProxyConfigZone(
         name="test-zone.example.com.",
         allowed_record_types=["TXT"],
@@ -872,6 +874,7 @@ def test_check_rrset_txt_append_only_allowed():
 
 
 def test_check_rrset_txt_append_only_blocks_delete():
+    """TXT DELETE is blocked when both allowed_record_types=["TXT"] and append_only are set."""
     zone = ProxyConfigZone(
         name="test-zone.example.com.",
         allowed_record_types=["TXT"],
@@ -889,6 +892,7 @@ def test_check_rrset_txt_append_only_blocks_delete():
 
 
 def test_check_rrset_txt_append_only_blocks_wrong_type():
+    """A non-TXT record type is blocked when allowed_record_types=["TXT"] and append_only are set."""
     zone = ProxyConfigZone(
         name="test-zone.example.com.",
         allowed_record_types=["TXT"],
@@ -903,9 +907,6 @@ def test_check_rrset_txt_append_only_blocks_wrong_type():
         "comments": [],
     }
     assert not check_rrset_allowed(zone, rrset)
-
-
-# --- check_append_only_records_intact tests ---
 
 
 def test_check_append_only_records_intact_no_existing_rrset():
