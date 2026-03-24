@@ -3,12 +3,13 @@ from contextlib import asynccontextmanager
 from http import HTTPStatus
 from typing import Literal
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from powerdns_api_proxy.config import (
+    check_append_only_records_intact,
     check_pdns_search_allowed,
     check_pdns_cryptokeys_allowed,
     check_pdns_tsigkeys_allowed,
@@ -361,10 +362,32 @@ async def update_zone_rrset(
         logger.info(f"Zone {zone_id} not allowed for environment {environment.name}")
         raise ZoneNotAllowedException()
     zone = environment.get_zone_if_allowed(zone_id)
-    ensure_rrsets_request_allowed(zone, await request.json())
+    payload = await request.json()
+    ensure_rrsets_request_allowed(zone, payload)
+
+    if zone.append_only:
+        zone_resp = await pdns.get(f"/api/v1/servers/{server_id}/zones/{zone_id}")
+        zone_pdns_response = await handle_pdns_response(zone_resp)
+        zone_pdns_response.raise_for_error()
+        existing_rrsets = (
+            zone_pdns_response.data.get("rrsets", [])
+            if isinstance(zone_pdns_response.data, dict)
+            else []
+        )
+        for rrset in payload["rrsets"]:
+            if rrset.get("changetype") == "REPLACE":
+                if not check_append_only_records_intact(existing_rrsets, rrset):
+                    logger.info(
+                        f"RRSET {rrset['name']} append_only violation in zone {zone.name}"
+                    )
+                    raise HTTPException(
+                        403,
+                        f"RRSET {rrset['name']} append_only violation: existing records would be removed",
+                    )
+
     resp = await pdns.patch(
         f"/api/v1/servers/{server_id}/zones/{zone_id}",
-        payload=await request.json(),
+        payload=payload,
     )
     pdns_response = await handle_pdns_response(resp)
     status_code = pdns_response.raise_for_error()

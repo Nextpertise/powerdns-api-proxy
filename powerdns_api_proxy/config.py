@@ -152,6 +152,16 @@ def check_rrset_allowed(zone: ProxyConfigZone, rrset: RRSET) -> bool:
     if zone.read_only:
         return False
 
+    if zone.append_only and rrset.get("changetype") == "DELETE":
+        logger.debug(f"RRSET {rrset['name']} not allowed: DELETE changetype blocked by append_only")
+        return False
+
+    if zone.allowed_record_types and rrset.get("type") not in zone.allowed_record_types:
+        logger.debug(
+            f"RRSET {rrset['name']} not allowed: type {rrset.get('type')} not in allowed_record_types {zone.allowed_record_types}"
+        )
+        return False
+
     if zone.all_records:
         return True
 
@@ -171,6 +181,41 @@ def check_rrset_allowed(zone: ProxyConfigZone, rrset: RRSET) -> bool:
         return True
 
     return False
+
+
+def check_append_only_records_intact(
+    existing_rrsets: list[dict], incoming_rrset: RRSET
+) -> bool:
+    """
+    For append_only zones, verify that a REPLACE changeset does not remove any
+    existing records from the RRset.
+
+    Finds the existing RRset matching name+type and checks that every existing
+    record content is still present in the incoming records list.
+
+    Returns True if the incoming records are a superset of existing records
+    (i.e. nothing is removed), False otherwise.
+    """
+    name = incoming_rrset["name"]
+    rtype = incoming_rrset["type"]
+
+    existing = next(
+        (r for r in existing_rrsets if r["name"] == name and r["type"] == rtype),
+        None,
+    )
+    if existing is None:
+        return True  # no existing RRset for this name+type, nothing can be lost
+
+    existing_contents = {rec["content"] for rec in existing.get("records", [])}
+    incoming_contents = {rec["content"] for rec in incoming_rrset.get("records", [])}
+
+    missing = existing_contents - incoming_contents
+    if missing:
+        logger.debug(
+            f"RRSET {name} append_only violation: existing records would be removed: {missing}"
+        )
+        return False
+    return True
 
 
 def check_acme_record_allowed(zone: ProxyConfigZone, rrset: RRSET) -> bool:
