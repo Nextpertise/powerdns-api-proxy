@@ -140,6 +140,58 @@ environments:
             acme: true
 ```
 
+##### Allowed record types
+
+Under a `zone` the option `allowed_record_types` can be set to a list of DNS record types.
+
+Only the listed types may be written. Any attempt to write a different type is rejected with `HTTP 403`.
+An empty list (the default) means all record types are permitted.
+
+```yaml
+...
+environments:
+    - name: "Test1"
+      zones:
+        - name: "example.com"
+          allowed_record_types:
+            - "TXT"
+            - "AAAA"
+```
+
+##### Append only
+
+Under a `zone` the option `append_only: true` can be set.
+
+This prevents any write from removing existing records:
+
+- `DELETE` changesets are rejected with `HTTP 403`.
+- `REPLACE` changesets are verified against the live PowerDNS state. The incoming records must contain **all records that are currently in PowerDNS** for that name and type. Any missing record results in `HTTP 403`.
+
+```yaml
+...
+environments:
+    - name: "Test1"
+      zones:
+        - name: "example.com"
+          append_only: true
+```
+
+`allowed_record_types` and `append_only` can be combined. The example below creates a token that can read all zones and may only ever add TXT records — never update or remove any:
+
+```yaml
+...
+environments:
+  - name: "append-txt-only"
+    token_sha512: "..."
+    global_read_only: true
+    zones:
+      - name: ".*"
+        regex: true
+        allowed_record_types:
+          - "TXT"
+        append_only: true
+```
+
 ##### Admin
 
 Under a `zone` `admin` rights can be defined.
