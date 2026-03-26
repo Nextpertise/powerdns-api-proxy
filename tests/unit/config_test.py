@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from powerdns_api_proxy.config import (
     check_acme_record_allowed,
+    check_append_only_records_intact,
     check_pdns_search_allowed,
     check_pdns_cryptokeys_allowed,
     check_pdns_tsigkeys_allowed,
@@ -495,6 +496,65 @@ def test_rrset_request_not_allowed_false_zone():
     assert err.value.detail == "RRSET example1.test-zone2.example.com. not allowed"
 
 
+def test_ensure_rrsets_request_allowed_append_only_superset():
+    """ensure_rrsets_request_allowed passes when existing records are all preserved."""
+    zone = ProxyConfigZone(name="test-zone.example.com.", append_only=True)
+    existing_rrsets = [
+        {
+            "name": "entry1.test-zone.example.com.",
+            "type": "TXT",
+            "records": [{"content": '"record-1"', "disabled": False}],
+        }
+    ]
+    request: RRSETRequest = {
+        "rrsets": [
+            {
+                "name": "entry1.test-zone.example.com.",
+                "type": "TXT",
+                "changetype": "REPLACE",
+                "ttl": 300,
+                "records": [
+                    {"content": '"record-1"', "disabled": False},
+                    {"content": '"record-2"', "disabled": False},
+                ],
+                "comments": [],
+            }
+        ]
+    }
+    assert ensure_rrsets_request_allowed(zone, request, existing_rrsets)
+
+
+def test_ensure_rrsets_request_allowed_append_only_drops_record():
+    """ensure_rrsets_request_allowed raises 403 when existing records would be removed."""
+    zone = ProxyConfigZone(name="test-zone.example.com.", append_only=True)
+    existing_rrsets = [
+        {
+            "name": "entry1.test-zone.example.com.",
+            "type": "TXT",
+            "records": [
+                {"content": '"record-1"', "disabled": False},
+                {"content": '"record-2"', "disabled": False},
+            ],
+        }
+    ]
+    request: RRSETRequest = {
+        "rrsets": [
+            {
+                "name": "entry1.test-zone.example.com.",
+                "type": "TXT",
+                "changetype": "REPLACE",
+                "ttl": 300,
+                "records": [{"content": '"record-2"', "disabled": False}],
+                "comments": [],
+            }
+        ]
+    }
+    with pytest.raises(HTTPException) as err:
+        ensure_rrsets_request_allowed(zone, request, existing_rrsets)
+    assert err.value.status_code == 403
+    assert "append_only violation" in err.value.detail
+
+
 def test_check_acme_record_allowed_all_records():
     zone = ProxyConfigZone(name="test-zone.example.com", all_records=True)
     rrset = RRSET(
@@ -681,3 +741,288 @@ def test_global_read_only_with_explicit_zones_keeps_zone_permissions():
     assert len(env._zones_lookup) == 2
     assert "example.com" in env._zones_lookup
     assert "readonly.com" in env._zones_lookup
+
+
+def test_check_rrset_allowed_record_type_allowed():
+    """A matching record type is allowed when allowed_record_types is set."""
+    zone = ProxyConfigZone(name="test-zone.example.com.", allowed_record_types=["TXT"])
+    rrset: RRSET = {
+        "name": "entry1.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert check_rrset_allowed(zone, rrset)
+
+
+def test_check_rrset_not_allowed_record_type_mismatch():
+    """A record type not in allowed_record_types is blocked."""
+    zone = ProxyConfigZone(name="test-zone.example.com.", allowed_record_types=["TXT"])
+    rrset: RRSET = {
+        "name": "entry1.test-zone.example.com.",
+        "type": "A",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert not check_rrset_allowed(zone, rrset)
+
+
+def test_check_rrset_allowed_multiple_record_types():
+    """All types in allowed_record_types are permitted; types outside are blocked."""
+    zone = ProxyConfigZone(
+        name="test-zone.example.com.", allowed_record_types=["TXT", "AAAA"]
+    )
+    for rtype in ["TXT", "AAAA"]:
+        rrset: RRSET = {
+            "name": "entry1.test-zone.example.com.",
+            "type": rtype,
+            "changetype": "REPLACE",
+            "ttl": 3600,
+            "records": [],
+            "comments": [],
+        }
+        assert check_rrset_allowed(zone, rrset)
+
+    rrset_a: RRSET = {
+        "name": "entry1.test-zone.example.com.",
+        "type": "A",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert not check_rrset_allowed(zone, rrset_a)
+
+
+def test_check_rrset_allowed_no_type_restriction():
+    """All record types are allowed when allowed_record_types is not set."""
+    zone = ProxyConfigZone(name="test-zone.example.com.")
+    for rtype in ["A", "AAAA", "TXT", "MX", "CNAME"]:
+        rrset: RRSET = {
+            "name": "entry1.test-zone.example.com.",
+            "type": rtype,
+            "changetype": "REPLACE",
+            "ttl": 3600,
+            "records": [],
+            "comments": [],
+        }
+        assert check_rrset_allowed(zone, rrset)
+
+
+def test_check_rrset_append_only_allows_replace():
+    """REPLACE changesets are allowed when append_only is set."""
+    zone = ProxyConfigZone(name="test-zone.example.com.", append_only=True)
+    rrset: RRSET = {
+        "name": "entry1.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert check_rrset_allowed(zone, rrset)
+
+
+def test_check_rrset_append_only_blocks_delete():
+    """DELETE changesets are blocked when append_only is set."""
+    zone = ProxyConfigZone(name="test-zone.example.com.", append_only=True)
+    rrset: RRSET = {
+        "name": "entry1.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "DELETE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert not check_rrset_allowed(zone, rrset)
+
+
+def test_check_rrset_not_append_only_allows_delete():
+    """DELETE changesets are allowed when append_only is not set."""
+    zone = ProxyConfigZone(name="test-zone.example.com.")
+    rrset: RRSET = {
+        "name": "entry1.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "DELETE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert check_rrset_allowed(zone, rrset)
+
+
+def test_check_rrset_txt_append_only_allowed():
+    """TXT REPLACE is allowed when both allowed_record_types=["TXT"] and append_only are set."""
+    zone = ProxyConfigZone(
+        name="test-zone.example.com.",
+        allowed_record_types=["TXT"],
+        append_only=True,
+    )
+    rrset: RRSET = {
+        "name": "entry1.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert check_rrset_allowed(zone, rrset)
+
+
+def test_check_rrset_txt_append_only_blocks_delete():
+    """TXT DELETE is blocked when both allowed_record_types=["TXT"] and append_only are set."""
+    zone = ProxyConfigZone(
+        name="test-zone.example.com.",
+        allowed_record_types=["TXT"],
+        append_only=True,
+    )
+    rrset: RRSET = {
+        "name": "entry1.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "DELETE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert not check_rrset_allowed(zone, rrset)
+
+
+def test_check_rrset_txt_append_only_blocks_wrong_type():
+    """A non-TXT record type is blocked when allowed_record_types=["TXT"] and append_only are set."""
+    zone = ProxyConfigZone(
+        name="test-zone.example.com.",
+        allowed_record_types=["TXT"],
+        append_only=True,
+    )
+    rrset: RRSET = {
+        "name": "entry1.test-zone.example.com.",
+        "type": "A",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert not check_rrset_allowed(zone, rrset)
+
+
+def test_check_append_only_records_intact_no_existing_rrset():
+    """No existing RRset for this name+type → always safe to proceed."""
+    incoming: RRSET = {
+        "name": "demo.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 300,
+        "records": [{"content": '"new-record"', "disabled": False}],
+        "comments": [],
+    }
+    assert check_append_only_records_intact([], incoming)
+
+
+def test_check_append_only_records_intact_superset():
+    """Incoming records include all existing ones plus a new one → allowed."""
+    existing_rrsets = [
+        {
+            "name": "demo.test-zone.example.com.",
+            "type": "TXT",
+            "records": [{"content": '"record-1"', "disabled": False}],
+        }
+    ]
+    incoming: RRSET = {
+        "name": "demo.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 300,
+        "records": [
+            {"content": '"record-1"', "disabled": False},
+            {"content": '"record-2"', "disabled": False},
+        ],
+        "comments": [],
+    }
+    assert check_append_only_records_intact(existing_rrsets, incoming)
+
+
+def test_check_append_only_records_intact_exact_same():
+    """Incoming records are identical to existing → allowed."""
+    existing_rrsets = [
+        {
+            "name": "demo.test-zone.example.com.",
+            "type": "TXT",
+            "records": [{"content": '"record-1"', "disabled": False}],
+        }
+    ]
+    incoming: RRSET = {
+        "name": "demo.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 300,
+        "records": [{"content": '"record-1"', "disabled": False}],
+        "comments": [],
+    }
+    assert check_append_only_records_intact(existing_rrsets, incoming)
+
+
+def test_check_append_only_records_intact_drops_record():
+    """Incoming records are missing an existing record → blocked."""
+    existing_rrsets = [
+        {
+            "name": "demo.test-zone.example.com.",
+            "type": "TXT",
+            "records": [
+                {"content": '"record-1"', "disabled": False},
+                {"content": '"record-2"', "disabled": False},
+            ],
+        }
+    ]
+    incoming: RRSET = {
+        "name": "demo.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 300,
+        "records": [{"content": '"record-2"', "disabled": False}],
+        "comments": [],
+    }
+    assert not check_append_only_records_intact(existing_rrsets, incoming)
+
+
+def test_check_append_only_records_intact_different_type():
+    """Existing A record is unaffected by a TXT REPLACE → safe."""
+    existing_rrsets = [
+        {
+            "name": "demo.test-zone.example.com.",
+            "type": "A",
+            "records": [{"content": "1.2.3.4", "disabled": False}],
+        }
+    ]
+    incoming: RRSET = {
+        "name": "demo.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 300,
+        "records": [{"content": '"some-txt"', "disabled": False}],
+        "comments": [],
+    }
+    assert check_append_only_records_intact(existing_rrsets, incoming)
+
+
+def test_check_append_only_records_intact_different_name():
+    """Existing RRset has a different name → not matched, safe."""
+    existing_rrsets = [
+        {
+            "name": "other.test-zone.example.com.",
+            "type": "TXT",
+            "records": [{"content": '"record-1"', "disabled": False}],
+        }
+    ]
+    incoming: RRSET = {
+        "name": "demo.test-zone.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 300,
+        "records": [],
+        "comments": [],
+    }
+    assert check_append_only_records_intact(existing_rrsets, incoming)

@@ -28,6 +28,11 @@ class ProxyConfigZone(BaseModel):
     `all_records` will be set to `True` if no `records` are defined.
     `cryptokeys` enables management of DNSSEC.
     `read_only` controls write permissions for this specific zone.
+    `allowed_record_types` restricts writes to the given DNS record types (e.g. ["TXT"]).
+      An empty list means all record types are allowed.
+    `append_only` blocks DELETE changesets and ensures REPLACE changesets never
+      remove existing records — the incoming records must be a superset of the
+      records currently in PowerDNS.
     """
 
     name: str
@@ -41,6 +46,8 @@ class ProxyConfigZone(BaseModel):
     all_records: bool = False
     read_only: bool = False
     cryptokeys: bool = False
+    allowed_record_types: list[str] = []
+    append_only: bool = False
 
     def __init__(self, **data):
         super().__init__(**data)

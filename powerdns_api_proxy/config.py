@@ -152,6 +152,16 @@ def check_rrset_allowed(zone: ProxyConfigZone, rrset: RRSET) -> bool:
     if zone.read_only:
         return False
 
+    if zone.append_only and rrset.get("changetype") == "DELETE":
+        logger.debug(f"RRSET {rrset['name']} not allowed: DELETE changetype blocked by append_only")
+        return False
+
+    if zone.allowed_record_types and rrset.get("type") not in zone.allowed_record_types:
+        logger.debug(
+            f"RRSET {rrset['name']} not allowed: type {rrset.get('type')} not in allowed_record_types {zone.allowed_record_types}"
+        )
+        return False
+
     if zone.all_records:
         return True
 
@@ -171,6 +181,41 @@ def check_rrset_allowed(zone: ProxyConfigZone, rrset: RRSET) -> bool:
         return True
 
     return False
+
+
+def check_append_only_records_intact(
+    existing_rrsets: list[dict], incoming_rrset: RRSET
+) -> bool:
+    """
+    For append_only zones, verify that a REPLACE changeset does not remove any
+    existing records from the RRset.
+
+    Finds the existing RRset matching name+type and checks that every existing
+    record content is still present in the incoming records list.
+
+    Returns True if the incoming records are a superset of existing records
+    (i.e. nothing is removed), False otherwise.
+    """
+    name = incoming_rrset["name"]
+    rtype = incoming_rrset["type"]
+
+    existing = next(
+        (r for r in existing_rrsets if r["name"] == name and r["type"] == rtype),
+        None,
+    )
+    if existing is None:
+        return True  # no existing RRset for this name+type, nothing can be lost
+
+    existing_contents = {rec["content"] for rec in existing.get("records", [])}
+    incoming_contents = {rec["content"] for rec in incoming_rrset.get("records", [])}
+
+    missing = existing_contents - incoming_contents
+    if missing:
+        logger.debug(
+            f"RRSET {name} append_only violation: existing records would be removed: {missing}"
+        )
+        return False
+    return True
 
 
 def check_acme_record_allowed(zone: ProxyConfigZone, rrset: RRSET) -> bool:
@@ -210,8 +255,16 @@ def check_pdns_tsigkeys_allowed(environment: ProxyConfigEnvironment) -> bool:
     return False
 
 
-def ensure_rrsets_request_allowed(zone: ProxyConfigZone, request: RRSETRequest) -> bool:
-    """Raises HTTPException if RRSET is not allowed"""
+def ensure_rrsets_request_allowed(
+    zone: ProxyConfigZone,
+    request: RRSETRequest,
+    existing_rrsets: list[dict] = [],
+) -> bool:
+    """Raises HTTPException if RRSET is not allowed.
+
+    `existing_rrsets` should be passed for append_only zones so that REPLACE
+    changesets can be verified not to remove any currently live records.
+    """
     if zone.read_only:
         logger.info("RRSET update not allowed with read only token")
         raise HTTPException(403, "RRSET update not allowed with read only token")
@@ -219,5 +272,14 @@ def ensure_rrsets_request_allowed(zone: ProxyConfigZone, request: RRSETRequest) 
         if not check_rrset_allowed(zone, rrset):
             logger.info(f"RRSET {rrset['name']} not allowed in zone {zone.name}")
             raise HTTPException(403, f"RRSET {rrset['name']} not allowed")
+        if zone.append_only and rrset.get("changetype") == "REPLACE":
+            if not check_append_only_records_intact(existing_rrsets, rrset):
+                logger.info(
+                    f"RRSET {rrset['name']} append_only violation in zone {zone.name}"
+                )
+                raise HTTPException(
+                    403,
+                    f"RRSET {rrset['name']} append_only violation: existing records would be removed",
+                )
         logger.info(f"RRSET {rrset['name']} allowed")
     return True

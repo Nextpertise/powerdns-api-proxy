@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from http import HTTPStatus
 from typing import Literal
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -361,10 +361,24 @@ async def update_zone_rrset(
         logger.info(f"Zone {zone_id} not allowed for environment {environment.name}")
         raise ZoneNotAllowedException()
     zone = environment.get_zone_if_allowed(zone_id)
-    ensure_rrsets_request_allowed(zone, await request.json())
+    payload = await request.json()
+
+    existing_rrsets = []
+    if zone.append_only:
+        zone_resp = await pdns.get(f"/api/v1/servers/{server_id}/zones/{zone_id}")
+        zone_pdns_response = await handle_pdns_response(zone_resp)
+        zone_pdns_response.raise_for_error()
+        existing_rrsets = (
+            zone_pdns_response.data.get("rrsets", [])
+            if isinstance(zone_pdns_response.data, dict)
+            else []
+        )
+
+    ensure_rrsets_request_allowed(zone, payload, existing_rrsets)
+
     resp = await pdns.patch(
         f"/api/v1/servers/{server_id}/zones/{zone_id}",
-        payload=await request.json(),
+        payload=payload,
     )
     pdns_response = await handle_pdns_response(resp)
     status_code = pdns_response.raise_for_error()
