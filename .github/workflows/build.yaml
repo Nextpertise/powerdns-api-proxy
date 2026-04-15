@@ -6,15 +6,8 @@ on:
     tags:
       - "v*.*.*"
 jobs:
-  prerequisites:
-    uses: Nextpertise/github-actions-shared-scripts/.github/workflows/prerequisites.yaml@1.0
-    with:
-      runs-on: public-runners
-
   build_image:
     runs-on: public-runners
-    needs:
-      - prerequisites
     steps:
       - name: Checkout
         uses: actions/checkout@v6
