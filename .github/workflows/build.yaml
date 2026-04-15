@@ -19,8 +19,8 @@ jobs:
         uses: docker/login-action@v4
         with:
           registry: registry.nextpertise.tools
-          username: ${{ secrets.REGISTRY_NEXTPERTISE_TOOLS_ACCOUNT }}
-          password: ${{ secrets.REGISTRY_NEXTPERTISE_TOOLS_KEY }}
+          username: ${{ secrets.REGISTRY_NEXTPERTISE_TOOLS_PUBLIC_ACCOUNT }}
+          password: ${{ secrets.REGISTRY_NEXTPERTISE_TOOLS_PUBLIC_KEY }}
 
       - name: Set context
         run: echo "context=$(pwd)" >> $GITHUB_ENV
