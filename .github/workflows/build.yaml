@@ -5,98 +5,38 @@ on:
       - "*"
     tags:
       - "v*.*.*"
-
 jobs:
-  test:
-    runs-on: public-runners
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
-        with:
-          python-version: '3.14'
+  prerequisites:
+    uses: Nextpertise/github-actions-shared-scripts/.github/workflows/prerequisites.yaml@1.0
+    with:
+      runs-on: public-runners
 
-      - name: Setup
-        run: make setup
-
-      - name: Run tests
-        run: make unit
-  pre-commit:
-    runs-on: public-runners
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
-        with:
-          python-version: '3.14'
-
-      - name: Setup
-        run: make setup
-
-      - name: Run pre-commit
-        run: make pre-commit-all
-        env:
-          SKIP: "no-commit-to-branch"
-  container:
+  build_image:
     runs-on: public-runners
     needs:
-      - test
-      - pre-commit
-    steps:
-      - name: Check out the repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
-        with:
-          # list of Docker images to use as base name for tags
-          images: |
-            ghcr.io/akquinet/powerdns-api-proxy
-          # generate Docker tags based on the following events/attributes
-          tags: |
-            type=schedule
-            type=ref,event=branch
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=sha
-
-      - name: Login to GHCR
-        if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags') || github.ref == 'refs/heads/main')
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push master Docker image
-        uses: docker/build-push-action@v6.18.0
-        with:
-          context: .
-          push: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/tags') || github.ref == 'refs/heads/main') }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-  semantic-release:
-    runs-on: public-runners
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs:
-      - container
+      - prerequisites
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to registry
+        uses: docker/login-action@v4
         with:
-          persist-credentials: false
+          registry: registry.nextpertise.tools
+          username: ${{ secrets.REGISTRY_NEXTPERTISE_TOOLS_ACCOUNT }}
+          password: ${{ secrets.REGISTRY_NEXTPERTISE_TOOLS_KEY }}
 
-      - name: Generate a token
-        id: generate_token
-        uses: actions/create-github-app-token@v2
+      - name: Set context
+        run: echo "context=$(pwd)" >> $GITHUB_ENV
+
+      - name: Push image to registry
+        uses: docker/build-push-action@v7
         with:
-          app-id: ${{ secrets.CICD_APP_ID }}
-          private-key: ${{ secrets.CICD_APP_PRIVATE_KEY }}
-
-      - name: Semantic Release
-        uses: cycjimmy/semantic-release-action@v3
-        env:
-          GITHUB_TOKEN: "${{ steps.generate_token.outputs.token }}"
-
+          file: ./docker/Dockerfile
+          context: ${{ env.context }}
+          push: true
+          tags: |
+            registry.nextpertise.tools/nextpertise/michaeltest:${{ github.ref_name }}
