@@ -18,8 +18,6 @@ jobs:
       - name: Log in to registry
         uses: docker/login-action@v4
         with:
-          cache-from: type=local,src=/tmp/buildx-cache
-          cache-to: type=local,dest=/tmp/buildx-cache,mode=max
           registry: registry.nextpertise.tools
           username: ${{ secrets.REGISTRY_NEXTPERTISE_TOOLS_PUBLIC_ACCOUNT }}
           password: ${{ secrets.REGISTRY_NEXTPERTISE_TOOLS_PUBLIC_KEY }}
@@ -30,6 +28,8 @@ jobs:
       - name: Push image to registry
         uses: docker/build-push-action@v7
         with:
+          cache-from: type=local,src=/tmp/buildx-cache
+          cache-to: type=local,dest=/tmp/buildx-cache,mode=max
           file: ./Dockerfile
           context: ${{ env.context }}
           push: true
