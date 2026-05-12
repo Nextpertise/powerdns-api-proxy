@@ -980,6 +980,41 @@ def test_get_zone_account_from_pdns_empty_returns_none(monkeypatch):
     assert account is None
 
 
+def test_get_zone_account_from_pdns_normalizes_trailing_dot(monkeypatch):
+    """PowerDNS expects canonical names with trailing dot; normalize before query."""
+    seen_paths = []
+
+    async def fake_get(path, params=None):
+        seen_paths.append(path)
+        return object()
+
+    pdns = AsyncMock()
+    pdns.get = AsyncMock(side_effect=fake_get)
+
+    class FakePDNSResponse:
+        is_success = True
+        status_code = 200
+        data = {"account": "tenant-a", "name": "z.example.com."}
+
+    async def fake_handle(resp):
+        return FakePDNSResponse()
+
+    monkeypatch.setattr("powerdns_api_proxy.config.handle_pdns_response", fake_handle)
+
+    account = asyncio.run(
+        get_zone_account_from_pdns(pdns, "localhost", "z.example.com")
+    )
+    assert account == "tenant-a"
+    assert seen_paths == ["/api/v1/servers/localhost/zones/z.example.com."]
+
+    seen_paths.clear()
+    account = asyncio.run(
+        get_zone_account_from_pdns(pdns, "localhost", "z.example.com.")
+    )
+    assert account == "tenant-a"
+    assert seen_paths == ["/api/v1/servers/localhost/zones/z.example.com."]
+
+
 def test_get_zone_account_from_pdns_error_returns_none(monkeypatch):
     pdns = AsyncMock()
     pdns.get.return_value = object()
