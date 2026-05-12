@@ -986,6 +986,7 @@ def test_get_zone_account_from_pdns_error_returns_none(monkeypatch):
 
     class FakePDNSResponse:
         is_success = False
+        status_code = 404
         data = "Not Found"
 
     async def fake_handle(resp):
