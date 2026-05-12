@@ -29,6 +29,7 @@ from powerdns_api_proxy.config import (
     get_environment_for_token,
     get_only_pdns_zones_allowed,
     load_config,
+    resolve_zone_for_environment,
 )
 from powerdns_api_proxy.exceptions import (
     RessourceNotAllowedException,
@@ -346,9 +347,11 @@ async def get_zone_metadata(
     <https://doc.powerdns.com/authoritative/http-api/zone.html#get--servers-server_id-zones-zone_id>
     """
     environment = get_environment_for_token(config, X_API_Key)
-    if not check_pdns_zone_allowed(environment, zone_id):
+    try:
+        await resolve_zone_for_environment(environment, zone_id, pdns, server_id)
+    except ZoneNotAllowedException:
         logger.info(f"Zone {zone_id} not allowed for environment {environment.name}")
-        raise ZoneNotAllowedException()
+        raise
     resp = await pdns.get(
         f"/api/v1/servers/{server_id}/zones/{zone_id}",
         params=dict(request.query_params),
@@ -402,10 +405,11 @@ async def update_zone_rrset(
     """
     logger.debug(f"Update RRSet request for {zone_id}")
     environment = get_environment_for_token(config, X_API_Key)
-    if not check_pdns_zone_allowed(environment, zone_id):
+    try:
+        zone = await resolve_zone_for_environment(environment, zone_id, pdns, server_id)
+    except ZoneNotAllowedException:
         logger.info(f"Zone {zone_id} not allowed for environment {environment.name}")
-        raise ZoneNotAllowedException()
-    zone = environment.get_zone_if_allowed(zone_id)
+        raise
     ensure_rrsets_request_allowed(zone, await request.json())
     resp = await pdns.patch(
         f"/api/v1/servers/{server_id}/zones/{zone_id}",
@@ -449,9 +453,11 @@ async def zone_notification(server_id: str, zone_id: str, X_API_Key: str = Heade
     <https://doc.powerdns.com/authoritative/http-api/zone.html#put--servers-server_id-zones-zone_id-notify>
     """
     environment = get_environment_for_token(config, X_API_Key)
-    if not check_pdns_zone_allowed(environment, zone_id):
+    try:
+        await resolve_zone_for_environment(environment, zone_id, pdns, server_id)
+    except ZoneNotAllowedException:
         logger.info(f"Zone {zone_id} not allowed for environment {environment.name}")
-        raise ZoneNotAllowedException()
+        raise
     resp = await pdns.put(f"/api/v1/servers/{server_id}/zones/{zone_id}/notify")
     pdns_response = await handle_pdns_response(resp)
     status_code = pdns_response.raise_for_error()
@@ -473,9 +479,11 @@ async def zone_rectification(
     <https://doc.powerdns.com/authoritative/http-api/zone.html#put--servers-server_id-zones-zone_id-rectify>
     """
     environment = get_environment_for_token(config, X_API_Key)
-    if not check_pdns_zone_allowed(environment, zone_id):
+    try:
+        await resolve_zone_for_environment(environment, zone_id, pdns, server_id)
+    except ZoneNotAllowedException:
         logger.info(f"Zone {zone_id} not allowed for environment {environment.name}")
-        raise ZoneNotAllowedException()
+        raise
     resp = await pdns.put(f"/api/v1/servers/{server_id}/zones/{zone_id}/rectify")
     pdns_response = await handle_pdns_response(resp)
     status_code = pdns_response.raise_for_error()
