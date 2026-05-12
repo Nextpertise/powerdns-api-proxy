@@ -21,6 +21,7 @@ from powerdns_api_proxy.models import (
     ProxyConfigZone,
     RRSETRequest,
 )
+from powerdns_api_proxy.pdns import PDNSConnector, handle_pdns_response
 from powerdns_api_proxy.utils import check_record_in_regex, check_zones_equal
 
 
@@ -112,6 +113,10 @@ def get_only_pdns_zones_allowed(
     for zone in pdns_zones:
         if check_pdns_zone_allowed(environment, zone["name"]):
             filtered.append(zone)
+            continue
+        zone_account = zone.get("account") or ""
+        if zone_account and zone_account in environment.accounts:
+            filtered.append(zone)
     return filtered
 
 
@@ -127,6 +132,66 @@ def check_pdns_zone_allowed(environment: ProxyConfigEnvironment, zone: str) -> b
         return False
     except Exception:
         return False
+
+
+async def get_zone_account_from_pdns(
+    pdns: PDNSConnector, server_id: str, zone_id: str
+) -> str | None:
+    """
+    Fetch a zone's `account` field from PowerDNS.
+
+    Returns the account string, or None if the zone is missing or the
+    upstream response is not parseable as a dict.
+    """
+    resp = await pdns.get(f"/api/v1/servers/{server_id}/zones/{zone_id}")
+    pdns_response = await handle_pdns_response(resp)
+    if not pdns_response.is_success:
+        return None
+    if not isinstance(pdns_response.data, dict):
+        return None
+    account = pdns_response.data.get("account")
+    return account if account else None
+
+
+async def resolve_zone_for_environment(
+    environment: ProxyConfigEnvironment,
+    zone: str,
+    pdns: PDNSConnector,
+    server_id: str,
+) -> ProxyConfigZone:
+    """
+    Resolve a zone for an environment, allowing two access paths:
+
+    1. Static config: the zone is matched by the environment's `zones` list.
+    2. Account-based: the environment declares one or more `accounts`,
+       and the zone's `account` field in PowerDNS matches one of them.
+
+    The static path is consulted first. The account path issues an extra
+    upstream call to read the zone's metadata; it is intentionally
+    uncached so access reflects PowerDNS state at request time.
+
+    Account-matched zones get RW permissions within the zone (no admin,
+    no cryptokeys) via a synthetic ProxyConfigZone.
+
+    Raises ZoneNotAllowedException if neither path grants access.
+    """
+    try:
+        return environment.get_zone_if_allowed(zone)
+    except ZoneNotAllowedException:
+        pass
+
+    if not environment.accounts:
+        raise ZoneNotAllowedException()
+
+    account = await get_zone_account_from_pdns(pdns, server_id, zone)
+    if account and account in environment.accounts:
+        logger.debug(
+            f'Zone "{zone}" granted to environment "{environment.name}" '
+            f'via account "{account}"'
+        )
+        return ProxyConfigZone(name=zone)
+
+    raise ZoneNotAllowedException()
 
 
 def check_pdns_zone_admin(environment: ProxyConfigEnvironment, zone: str) -> bool:

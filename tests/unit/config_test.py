@@ -1,5 +1,7 @@
+import asyncio
 import os
 from copy import deepcopy
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -16,6 +18,8 @@ from powerdns_api_proxy.config import (
     ensure_rrsets_request_allowed,
     get_environment_for_token,
     get_only_pdns_zones_allowed,
+    get_zone_account_from_pdns,
+    resolve_zone_for_environment,
     token_defined,
 )
 from powerdns_api_proxy.models import (
@@ -681,3 +685,223 @@ def test_global_read_only_with_explicit_zones_keeps_zone_permissions():
     assert len(env._zones_lookup) == 2
     assert "example.com" in env._zones_lookup
     assert "readonly.com" in env._zones_lookup
+
+
+# Account-based zone access tests
+
+
+def test_environment_accepts_accounts_field():
+    env = ProxyConfigEnvironment(
+        name="account env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        accounts=["tenant-a", "tenant-b"],
+    )
+    assert env.accounts == ["tenant-a", "tenant-b"]
+    assert env.zones == []
+
+
+def test_environment_accounts_default_empty():
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+    )
+    assert env.accounts == []
+
+
+def test_get_only_pdns_zones_allowed_includes_account_match():
+    pdns_zones = [
+        {"name": "static.example.com.", "account": ""},
+        {"name": "account-zone.example.com.", "account": "tenant-a"},
+        {"name": "other.example.com.", "account": "tenant-b"},
+        {"name": "unrelated.example.com.", "account": "tenant-c"},
+    ]
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        zones=[ProxyConfigZone(name="static.example.com.")],
+        accounts=["tenant-a", "tenant-b"],
+    )
+    allowed = get_only_pdns_zones_allowed(env, pdns_zones)
+    names = {z["name"] for z in allowed}
+    assert names == {
+        "static.example.com.",
+        "account-zone.example.com.",
+        "other.example.com.",
+    }
+
+
+def test_get_only_pdns_zones_allowed_empty_account_not_matched():
+    """An empty `accounts` entry on the env must not match zones with no account."""
+    pdns_zones = [
+        {"name": "noaccount.example.com.", "account": ""},
+        {"name": "noaccount2.example.com."},  # missing key entirely
+    ]
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        accounts=[""],
+    )
+    allowed = get_only_pdns_zones_allowed(env, pdns_zones)
+    assert allowed == []
+
+
+def test_resolve_zone_for_environment_static_hit():
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        zones=[ProxyConfigZone(name="static.example.com.")],
+        accounts=["tenant-a"],
+    )
+    pdns = AsyncMock()
+    zone = asyncio.run(
+        resolve_zone_for_environment(env, "static.example.com.", pdns, "localhost")
+    )
+    assert zone.name == "static.example.com."
+    pdns.get.assert_not_called()
+
+
+def test_resolve_zone_for_environment_account_hit(monkeypatch):
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        accounts=["tenant-a"],
+    )
+
+    async def fake_account(pdns, server_id, zone_id):
+        assert zone_id == "account-zone.example.com."
+        assert server_id == "localhost"
+        return "tenant-a"
+
+    monkeypatch.setattr(
+        "powerdns_api_proxy.config.get_zone_account_from_pdns", fake_account
+    )
+
+    pdns = AsyncMock()
+    zone = asyncio.run(
+        resolve_zone_for_environment(
+            env, "account-zone.example.com.", pdns, "localhost"
+        )
+    )
+    assert zone.name == "account-zone.example.com."
+    # synthetic zone is RW, no admin, no cryptokeys
+    assert zone.all_records is True
+    assert zone.admin is False
+    assert zone.cryptokeys is False
+    assert zone.read_only is False
+
+
+def test_resolve_zone_for_environment_account_miss(monkeypatch):
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        accounts=["tenant-a"],
+    )
+
+    async def fake_account(pdns, server_id, zone_id):
+        return "tenant-b"
+
+    monkeypatch.setattr(
+        "powerdns_api_proxy.config.get_zone_account_from_pdns", fake_account
+    )
+
+    pdns = AsyncMock()
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(
+            resolve_zone_for_environment(env, "other.example.com.", pdns, "localhost")
+        )
+    assert err.value.status_code == ZoneNotAllowedException().status_code
+
+
+def test_resolve_zone_for_environment_no_accounts_configured():
+    """No static match and no accounts configured -> not allowed, no upstream call."""
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        zones=[ProxyConfigZone(name="static.example.com.")],
+    )
+    pdns = AsyncMock()
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            resolve_zone_for_environment(env, "other.example.com.", pdns, "localhost")
+        )
+    pdns.get.assert_not_called()
+
+
+def test_resolve_zone_for_environment_pdns_returns_no_account(monkeypatch):
+    """Zone exists in PowerDNS but has no account set -> not allowed."""
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        accounts=["tenant-a"],
+    )
+
+    async def fake_account(pdns, server_id, zone_id):
+        return None
+
+    monkeypatch.setattr(
+        "powerdns_api_proxy.config.get_zone_account_from_pdns", fake_account
+    )
+
+    pdns = AsyncMock()
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            resolve_zone_for_environment(env, "other.example.com.", pdns, "localhost")
+        )
+
+
+def test_get_zone_account_from_pdns_success(monkeypatch):
+    pdns = AsyncMock()
+    pdns.get.return_value = object()  # placeholder; handle_pdns_response is patched
+
+    class FakePDNSResponse:
+        is_success = True
+        data = {"account": "tenant-a", "name": "z.example.com."}
+
+    async def fake_handle(resp):
+        return FakePDNSResponse()
+
+    monkeypatch.setattr("powerdns_api_proxy.config.handle_pdns_response", fake_handle)
+
+    account = asyncio.run(
+        get_zone_account_from_pdns(pdns, "localhost", "z.example.com.")
+    )
+    assert account == "tenant-a"
+    pdns.get.assert_awaited_once()
+
+
+def test_get_zone_account_from_pdns_empty_returns_none(monkeypatch):
+    pdns = AsyncMock()
+    pdns.get.return_value = object()
+
+    class FakePDNSResponse:
+        is_success = True
+        data = {"account": "", "name": "z.example.com."}
+
+    async def fake_handle(resp):
+        return FakePDNSResponse()
+
+    monkeypatch.setattr("powerdns_api_proxy.config.handle_pdns_response", fake_handle)
+
+    account = asyncio.run(
+        get_zone_account_from_pdns(pdns, "localhost", "z.example.com.")
+    )
+    assert account is None
+
+
+def test_get_zone_account_from_pdns_error_returns_none(monkeypatch):
+    pdns = AsyncMock()
+    pdns.get.return_value = object()
+
+    class FakePDNSResponse:
+        is_success = False
+        data = "Not Found"
+
+    async def fake_handle(resp):
+        return FakePDNSResponse()
+
+    monkeypatch.setattr("powerdns_api_proxy.config.handle_pdns_response", fake_handle)
+
+    account = asyncio.run(
+        get_zone_account_from_pdns(pdns, "localhost", "missing.example.com.")
+    )
+    assert account is None

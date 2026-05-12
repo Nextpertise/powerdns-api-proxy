@@ -186,6 +186,31 @@ environments:
        regex: true
 ```
 
+#### Accounts
+
+An `environment` can declare one or more PowerDNS `accounts` to grant
+dynamic access to every zone tagged with one of those account values in
+PowerDNS.
+
+This is additive: it works alongside the static `zones` list, or on its
+own. Zones matched via `accounts` get read/write permissions within the
+zone — no admin (so create/delete zone, update zone metadata are not
+allowed), and no CryptoKey access.
+
+```yaml
+...
+environments:
+    - name: "Test1"
+      accounts:
+        - "tenant-a"
+        - "tenant-b"
+```
+
+> Account-based access is resolved against PowerDNS on every request, so
+> re-tagging a zone in PowerDNS is reflected immediately. Each
+> account-based zone access costs one extra upstream call to fetch the
+> zone's `account` field.
+
 #### Global read
 
 Global `read` permissions can be defined under an `environment`.
