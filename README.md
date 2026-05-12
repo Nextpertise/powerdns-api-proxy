@@ -214,7 +214,8 @@ environments:
 > Account-based access is resolved against PowerDNS on every request, so
 > re-tagging a zone in PowerDNS is reflected immediately. Each
 > account-based zone access costs one extra upstream call to fetch the
-> zone's `account` field.
+> zone's `account` field. The `/info/allowed` and `/info/zone-allowed`
+> endpoints also reflect account-based access.
 
 #### Global read
 

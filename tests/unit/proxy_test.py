@@ -1,3 +1,4 @@
+import hashlib
 import os
 from typing import Generator
 from unittest.mock import AsyncMock, patch
@@ -193,3 +194,146 @@ def test_api_delete_wrong_token(path, fixture_patch_dummy_config, fixture_patch_
 @pytest.mark.parametrize("path", delete_routes)
 def test_api_delete_missing_token(path, fixture_patch_dummy_config, fixture_patch_pdns):
     _token_missing_request(client, "DELETE", path)
+
+
+# Info endpoints with account-based access
+
+
+dummy_account_env_token = "tenantenvtoken-XXXXXXXXXXXXXXXXXXXXXX"
+dummy_account_env_token_sha512 = hashlib.sha512(
+    dummy_account_env_token.encode()
+).hexdigest()
+
+dummy_account_env = ProxyConfigEnvironment(
+    name="Account Env",
+    token_sha512=dummy_account_env_token_sha512,
+    zones=[ProxyConfigZone(name="static.example.com.")],
+    accounts=["tenant-a"],
+)
+dummy_account_config = ProxyConfig(
+    pdns_api_token="blaaa",
+    pdns_api_url="bluub",
+    environments=[dummy_account_env],
+)
+
+
+def _make_pdns_mock(zones_list):
+    """Return an AsyncMock for PDNSConnector that yields the given zones."""
+    pdns_mock = AsyncMock()
+    pdns_mock.get.return_value = object()  # placeholder; handle_pdns_response patched
+
+    class FakePDNSResponse:
+        is_success = True
+        data = zones_list
+
+        def raise_for_error(self):
+            return 200
+
+    async def fake_handle(resp):
+        return FakePDNSResponse()
+
+    return pdns_mock, fake_handle
+
+
+def test_info_allowed_includes_account_matched_zones():
+    pdns_zones = [
+        {"name": "static.example.com.", "account": ""},
+        {"name": "account-zone.example.com.", "account": "tenant-a"},
+        {"name": "other.example.com.", "account": "tenant-b"},
+    ]
+    pdns_mock, fake_handle = _make_pdns_mock(pdns_zones)
+
+    with (
+        patch(
+            "powerdns_api_proxy.config.load_config", return_value=dummy_account_config
+        ),
+        patch("powerdns_api_proxy.proxy.config", dummy_account_config),
+        patch("powerdns_api_proxy.proxy.pdns", pdns_mock),
+        patch("powerdns_api_proxy.proxy.handle_pdns_response", fake_handle),
+    ):
+        answer = client.get(
+            "/info/allowed", headers={"X-API-Key": dummy_account_env_token}
+        )
+    assert answer.status_code == 200
+    names = {z["name"] for z in answer.json()["zones"]}
+    # static zone plus account-matched zone (but not the wrong-account one)
+    assert names == {"static.example.com.", "account-zone.example.com."}
+
+
+def test_info_allowed_no_accounts_skips_upstream():
+    """If env has no accounts, /info/allowed must not call PowerDNS."""
+    env_no_accounts = ProxyConfigEnvironment(
+        name="Static Env",
+        token_sha512=dummy_account_env_token_sha512,
+        zones=[ProxyConfigZone(name="static.example.com.")],
+    )
+    config_no_accounts = ProxyConfig(
+        pdns_api_token="blaaa",
+        pdns_api_url="bluub",
+        environments=[env_no_accounts],
+    )
+    pdns_mock = AsyncMock()
+    with (
+        patch("powerdns_api_proxy.config.load_config", return_value=config_no_accounts),
+        patch("powerdns_api_proxy.proxy.config", config_no_accounts),
+        patch("powerdns_api_proxy.proxy.pdns", pdns_mock),
+    ):
+        answer = client.get(
+            "/info/allowed", headers={"X-API-Key": dummy_account_env_token}
+        )
+    assert answer.status_code == 200
+    pdns_mock.get.assert_not_called()
+
+
+def test_info_zone_allowed_via_account(monkeypatch):
+    async def fake_account(pdns, server_id, zone_id):
+        return "tenant-a"
+
+    monkeypatch.setattr(
+        "powerdns_api_proxy.config.get_zone_account_from_pdns", fake_account
+    )
+
+    pdns_mock = AsyncMock()
+    with (
+        patch(
+            "powerdns_api_proxy.config.load_config", return_value=dummy_account_config
+        ),
+        patch("powerdns_api_proxy.proxy.config", dummy_account_config),
+        patch("powerdns_api_proxy.proxy.pdns", pdns_mock),
+    ):
+        answer = client.get(
+            "/info/zone-allowed?zone=account-zone.example.com.",
+            headers={"X-API-Key": dummy_account_env_token},
+        )
+    body = answer.json()
+    assert answer.status_code == 200
+    assert body["allowed"] is True
+    assert body["zone"] == "account-zone.example.com."
+    assert body["config"]["name"] == "account-zone.example.com."
+    assert body["config"]["all_records"] is True
+    assert body["config"]["admin"] is False
+
+
+def test_info_zone_allowed_account_miss(monkeypatch):
+    async def fake_account(pdns, server_id, zone_id):
+        return "wrong-tenant"
+
+    monkeypatch.setattr(
+        "powerdns_api_proxy.config.get_zone_account_from_pdns", fake_account
+    )
+
+    pdns_mock = AsyncMock()
+    with (
+        patch(
+            "powerdns_api_proxy.config.load_config", return_value=dummy_account_config
+        ),
+        patch("powerdns_api_proxy.proxy.config", dummy_account_config),
+        patch("powerdns_api_proxy.proxy.pdns", pdns_mock),
+    ):
+        answer = client.get(
+            "/info/zone-allowed?zone=other.example.com.",
+            headers={"X-API-Key": dummy_account_env_token},
+        )
+    body = answer.json()
+    assert answer.status_code == 200
+    assert body["allowed"] is False

@@ -42,6 +42,7 @@ from powerdns_api_proxy.logging import logger
 from powerdns_api_proxy.middleware import AuditMiddleware
 from powerdns_api_proxy.metrics import http_requests_total_environment
 from powerdns_api_proxy.models import (
+    ProxyConfigZone,
     ResponseAllowed,
     ResponseZoneAllowed,
 )
@@ -159,7 +160,22 @@ async def get_allowed_ressources(X_API_Key: str = Header()):
     """Retrieve allowed requests for the given token."""
     logger.info("Checking allowed ressources for given api key")
     environment = get_environment_for_token(config, X_API_Key)
-    return ResponseAllowed(zones=environment.zones)
+    zones = list(environment.zones)
+
+    if environment.accounts:
+        resp = await pdns.get("/api/v1/servers/localhost/zones")
+        pdns_response = await handle_pdns_response(resp)
+        pdns_response.raise_for_error()
+        if isinstance(pdns_response.data, list):
+            for zone_data in pdns_response.data:
+                zone_account = zone_data.get("account") or ""
+                if not zone_account or zone_account not in environment.accounts:
+                    continue
+                if check_pdns_zone_allowed(environment, zone_data["name"]):
+                    continue
+                zones.append(ProxyConfigZone(name=zone_data["name"]))
+
+    return ResponseAllowed(zones=zones)
 
 
 @router_proxy.get(
@@ -173,10 +189,12 @@ async def get_zone_allowed(zone: str, X_API_Key: str = Header()):
     """
     logger.debug("Checking if zone is allowed for given api key")
     environment = get_environment_for_token(config, X_API_Key)
-    if not check_pdns_zone_allowed(environment, zone):
+    try:
+        zone_config = await resolve_zone_for_environment(
+            environment, zone, pdns, "localhost"
+        )
+    except ZoneNotAllowedException:
         return ResponseZoneAllowed(zone=zone, allowed=False)
-
-    zone_config = environment.get_zone_if_allowed(zone)
     return ResponseZoneAllowed(zone=zone, allowed=True, config=zone_config)
 
 
