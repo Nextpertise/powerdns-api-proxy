@@ -140,10 +140,15 @@ async def get_zone_account_from_pdns(
     """
     Fetch a zone's `account` field from PowerDNS.
 
+    The zone id is normalized to canonical form (trailing dot) because
+    PowerDNS returns an empty stub for non-canonical names instead of
+    looking up the real zone.
+
     Returns the account string, or None if the zone is missing or the
     upstream response is not parseable as a dict.
     """
-    resp = await pdns.get(f"/api/v1/servers/{server_id}/zones/{zone_id}")
+    canonical_zone = zone_id if zone_id.endswith(".") else f"{zone_id}."
+    resp = await pdns.get(f"/api/v1/servers/{server_id}/zones/{canonical_zone}")
     pdns_response = await handle_pdns_response(resp)
     if not pdns_response.is_success:
         logger.info(
