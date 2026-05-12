@@ -146,10 +146,21 @@ async def get_zone_account_from_pdns(
     resp = await pdns.get(f"/api/v1/servers/{server_id}/zones/{zone_id}")
     pdns_response = await handle_pdns_response(resp)
     if not pdns_response.is_success:
+        logger.info(
+            f"Account lookup for zone '{zone_id}' on server '{server_id}' "
+            f"failed: upstream status {pdns_response.status_code}"
+        )
         return None
     if not isinstance(pdns_response.data, dict):
+        logger.info(
+            f"Account lookup for zone '{zone_id}' got non-dict response: "
+            f"{type(pdns_response.data).__name__}"
+        )
         return None
     account = pdns_response.data.get("account")
+    logger.info(
+        f"PowerDNS reports zone '{zone_id}' account = '{account}'"
+    )
     return account if account else None
 
 
@@ -183,14 +194,22 @@ async def resolve_zone_for_environment(
     if not environment.accounts:
         raise ZoneNotAllowedException()
 
+    logger.info(
+        f"Static zones do not allow '{zone}' for environment "
+        f"'{environment.name}'; checking accounts {environment.accounts}"
+    )
     account = await get_zone_account_from_pdns(pdns, server_id, zone)
     if account and account in environment.accounts:
-        logger.debug(
-            f'Zone "{zone}" granted to environment "{environment.name}" '
-            f'via account "{account}"'
+        logger.info(
+            f"Zone '{zone}' granted to environment '{environment.name}' "
+            f"via account '{account}'"
         )
         return ProxyConfigZone(name=zone)
 
+    logger.info(
+        f"Zone '{zone}' not granted via accounts: PowerDNS account "
+        f"'{account}' not in environment.accounts={environment.accounts}"
+    )
     raise ZoneNotAllowedException()
 
 
