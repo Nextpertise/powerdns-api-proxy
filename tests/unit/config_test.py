@@ -941,3 +941,101 @@ def test_get_zone_account_from_pdns_error_returns_none(monkeypatch):
         get_zone_account_from_pdns(pdns, "localhost", "missing.example.com.")
     )
     assert account is None
+
+
+def test_resolve_zone_for_environment_zone_data_hit_skips_upstream():
+    """When zone_data is passed and matches, no upstream call is made."""
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        accounts=["tenant-a"],
+    )
+    pdns = AsyncMock()
+    zone = asyncio.run(
+        resolve_zone_for_environment(
+            env,
+            "z.example.com.",
+            pdns,
+            "localhost",
+            zone_data={"account": "tenant-a", "name": "z.example.com."},
+        )
+    )
+    assert zone.name == "z.example.com."
+    assert zone.all_records is True
+    assert zone.admin is False
+    assert zone.cryptokeys is False
+    pdns.get.assert_not_called()
+
+
+def test_resolve_zone_for_environment_zone_data_miss_skips_upstream():
+    """zone_data with non-matching account: deny, no upstream call."""
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        accounts=["tenant-a"],
+    )
+    pdns = AsyncMock()
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            resolve_zone_for_environment(
+                env,
+                "z.example.com.",
+                pdns,
+                "localhost",
+                zone_data={"account": "tenant-b", "name": "z.example.com."},
+            )
+        )
+    pdns.get.assert_not_called()
+
+
+def test_resolve_zone_for_environment_zone_data_empty_account_denied():
+    """zone_data with empty or missing account is denied even if env has accounts."""
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        accounts=["tenant-a", ""],
+    )
+    pdns = AsyncMock()
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            resolve_zone_for_environment(
+                env,
+                "z.example.com.",
+                pdns,
+                "localhost",
+                zone_data={"account": "", "name": "z.example.com."},
+            )
+        )
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            resolve_zone_for_environment(
+                env,
+                "z.example.com.",
+                pdns,
+                "localhost",
+                zone_data={"name": "z.example.com."},
+            )
+        )
+    pdns.get.assert_not_called()
+
+
+def test_resolve_zone_for_environment_zone_data_static_still_short_circuits():
+    """Static config still wins; zone_data is not consulted when static allows."""
+    env = ProxyConfigEnvironment(
+        name="env",
+        token_sha512=dummy_proxy_environment_token_sha512,
+        zones=[ProxyConfigZone(name="static.example.com.")],
+        accounts=["tenant-a"],
+    )
+    pdns = AsyncMock()
+    zone = asyncio.run(
+        resolve_zone_for_environment(
+            env,
+            "static.example.com.",
+            pdns,
+            "localhost",
+            zone_data={"account": "tenant-b"},  # would deny via account; static wins
+        )
+    )
+    assert zone.name == "static.example.com."
+    pdns.get.assert_not_called()

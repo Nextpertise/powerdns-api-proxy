@@ -320,17 +320,28 @@ async def get_zone_metadata(
     <https://doc.powerdns.com/authoritative/http-api/zone.html#get--servers-server_id-zones-zone_id>
     """
     environment = get_environment_for_token(config, X_API_Key)
-    try:
-        await resolve_zone_for_environment(environment, zone_id, pdns, server_id)
-    except ZoneNotAllowedException:
+    if not check_pdns_zone_allowed(environment, zone_id) and not environment.accounts:
         logger.info(f"Zone {zone_id} not allowed for environment {environment.name}")
-        raise
+        raise ZoneNotAllowedException()
     resp = await pdns.get(
         f"/api/v1/servers/{server_id}/zones/{zone_id}",
         params=dict(request.query_params),
     )
     pdns_response = await handle_pdns_response(resp)
     status_code = pdns_response.raise_for_error()
+    try:
+        await resolve_zone_for_environment(
+            environment,
+            zone_id,
+            pdns,
+            server_id,
+            zone_data=pdns_response.data
+            if isinstance(pdns_response.data, dict)
+            else None,
+        )
+    except ZoneNotAllowedException:
+        logger.info(f"Zone {zone_id} not allowed for environment {environment.name}")
+        raise
     return JSONResponse(content=pdns_response.data, status_code=status_code)
 
 

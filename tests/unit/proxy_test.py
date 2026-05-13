@@ -336,3 +336,112 @@ def test_info_zone_allowed_account_miss(monkeypatch):
     body = answer.json()
     assert answer.status_code == 200
     assert body["allowed"] is False
+
+
+def test_get_zone_metadata_account_hit_single_upstream_call(monkeypatch):
+    """
+    GET /api/v1/servers/{id}/zones/{zone} for an account-matched zone makes
+    exactly one upstream call: the zone metadata fetch itself doubles as the
+    authorization source.
+    """
+
+    # If anything triggers a pre-flight account fetch, fail the test loudly.
+    async def fail_if_called(pdns, server_id, zone_id):
+        raise AssertionError(
+            "get_zone_account_from_pdns must not be called on GET zone path"
+        )
+
+    monkeypatch.setattr(
+        "powerdns_api_proxy.config.get_zone_account_from_pdns", fail_if_called
+    )
+
+    zone_payload = {
+        "name": "account-zone.example.com.",
+        "account": "tenant-a",
+        "rrsets": [],
+    }
+    pdns_mock, fake_handle = _make_pdns_mock(zone_payload)
+
+    with (
+        patch(
+            "powerdns_api_proxy.config.load_config", return_value=dummy_account_config
+        ),
+        patch("powerdns_api_proxy.proxy.config", dummy_account_config),
+        patch("powerdns_api_proxy.proxy.pdns", pdns_mock),
+        patch("powerdns_api_proxy.proxy.handle_pdns_response", fake_handle),
+    ):
+        answer = client.get(
+            "/api/v1/servers/localhost/zones/account-zone.example.com.",
+            headers={"X-API-Key": dummy_account_env_token},
+        )
+
+    assert answer.status_code == 200
+    assert answer.json() == zone_payload
+    assert pdns_mock.get.await_count == 1
+    pdns_mock.get.assert_awaited_with(
+        "/api/v1/servers/localhost/zones/account-zone.example.com.",
+        params={},
+    )
+
+
+def test_get_zone_metadata_account_miss_single_upstream_call(monkeypatch):
+    """Account-miss path: still one upstream call (the data fetch), then 403."""
+
+    async def fail_if_called(pdns, server_id, zone_id):
+        raise AssertionError(
+            "get_zone_account_from_pdns must not be called on GET zone path"
+        )
+
+    monkeypatch.setattr(
+        "powerdns_api_proxy.config.get_zone_account_from_pdns", fail_if_called
+    )
+
+    zone_payload = {
+        "name": "wrong.example.com.",
+        "account": "tenant-b",
+        "rrsets": [],
+    }
+    pdns_mock, fake_handle = _make_pdns_mock(zone_payload)
+
+    with (
+        patch(
+            "powerdns_api_proxy.config.load_config", return_value=dummy_account_config
+        ),
+        patch("powerdns_api_proxy.proxy.config", dummy_account_config),
+        patch("powerdns_api_proxy.proxy.pdns", pdns_mock),
+        patch("powerdns_api_proxy.proxy.handle_pdns_response", fake_handle),
+    ):
+        answer = client.get(
+            "/api/v1/servers/localhost/zones/wrong.example.com.",
+            headers={"X-API-Key": dummy_account_env_token},
+        )
+
+    assert answer.status_code == 403
+    assert pdns_mock.get.await_count == 1
+
+
+def test_get_zone_metadata_no_accounts_short_circuits():
+    """No static match and env has no accounts: 403 without contacting PDNS."""
+    env_no_accounts = ProxyConfigEnvironment(
+        name="Static Env",
+        token_sha512=dummy_account_env_token_sha512,
+        zones=[ProxyConfigZone(name="static.example.com.")],
+    )
+    config_no_accounts = ProxyConfig(
+        pdns_api_token="blaaa",
+        pdns_api_url="bluub",
+        environments=[env_no_accounts],
+    )
+    pdns_mock = AsyncMock()
+    with (
+        patch("powerdns_api_proxy.config.load_config", return_value=config_no_accounts),
+        patch("powerdns_api_proxy.proxy.config", config_no_accounts),
+        patch("powerdns_api_proxy.proxy.pdns", pdns_mock),
+    ):
+        answer = client.get(
+            "/api/v1/servers/localhost/zones/other.example.com.",
+            headers={"X-API-Key": dummy_account_env_token},
+        )
+
+    assert answer.status_code == 403
+    pdns_mock.get.assert_not_called()
