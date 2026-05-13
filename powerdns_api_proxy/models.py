@@ -56,6 +56,7 @@ class ProxyConfigEnvironment(BaseModel):
     name: str
     token_sha512: str
     zones: list[ProxyConfigZone] = []
+    accounts: list[str] = []
     global_read_only: bool = False
     global_search: bool = False
     global_cryptokeys: bool = False
@@ -92,6 +93,7 @@ class ProxyConfigEnvironment(BaseModel):
             + str(self.global_search)
             + str(self.global_tsigkeys)
             + str(self.zones)
+            + str(self.accounts)
         )
 
     @lru_cache(maxsize=10000)

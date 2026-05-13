@@ -8,3 +8,5 @@ environments:
     zones:
       - name: zone1.example.com
       - name: zone2.example.com
+    accounts:
+      - example-account
