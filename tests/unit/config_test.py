@@ -9,6 +9,8 @@ from powerdns_api_proxy.config import (
     check_pdns_search_allowed,
     check_pdns_cryptokeys_allowed,
     check_pdns_tsigkeys_allowed,
+    check_pdns_config_allowed,
+    check_pdns_statistics_allowed,
     check_pdns_zone_admin,
     check_pdns_zone_allowed,
     check_rrset_allowed,
@@ -298,6 +300,72 @@ def test_check_rrset_not_allowed_single_entries():
             "comments": [],
         }
         assert not check_rrset_allowed(zone, rrset)
+
+
+def test_check_rrset_allowed_regex_zone_with_regex_records():
+    zone = ProxyConfigZone(
+        name=".*",
+        regex=True,
+        regex_records=["^_acme-challenge\\..*"],
+    )
+
+    rrset_allowed: RRSET = {
+        "name": "_acme-challenge.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert check_rrset_allowed(zone, rrset_allowed)
+
+    rrset_denied: RRSET = {
+        "name": "www.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert not check_rrset_allowed(zone, rrset_denied)
+
+
+def test_check_rrset_allowed_regex_zone_with_multiple_regex_records():
+    zone = ProxyConfigZone(
+        name=".*\\.example\\.com",
+        regex=True,
+        regex_records=["^_.*", "^test-.*"],
+    )
+
+    rrset1: RRSET = {
+        "name": "_acme-challenge.sub.example.com.",
+        "type": "TXT",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert check_rrset_allowed(zone, rrset1)
+
+    rrset2: RRSET = {
+        "name": "test-server.example.com.",
+        "type": "CNAME",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert check_rrset_allowed(zone, rrset2)
+
+    rrset3: RRSET = {
+        "name": "www.example.com.",
+        "type": "A",
+        "changetype": "REPLACE",
+        "ttl": 3600,
+        "records": [],
+        "comments": [],
+    }
+    assert not check_rrset_allowed(zone, rrset3)
 
 
 def test_check_rrsets_request_allowed_no_raise():
@@ -616,6 +684,30 @@ def test_tsigkeys_allowed_globally():
     environment = deepcopy(dummy_proxy_environment)
     environment.global_tsigkeys = True
     assert check_pdns_tsigkeys_allowed(environment) is True
+
+
+def test_config_not_allowed():
+    environment = deepcopy(dummy_proxy_environment)
+    environment.global_config = False
+    assert check_pdns_config_allowed(environment) is False
+
+
+def test_config_allowed_globally():
+    environment = deepcopy(dummy_proxy_environment)
+    environment.global_config = True
+    assert check_pdns_config_allowed(environment) is True
+
+
+def test_statistics_not_allowed():
+    environment = deepcopy(dummy_proxy_environment)
+    environment.global_statistics = False
+    assert check_pdns_statistics_allowed(environment) is False
+
+
+def test_statistics_allowed_globally():
+    environment = deepcopy(dummy_proxy_environment)
+    environment.global_statistics = True
+    assert check_pdns_statistics_allowed(environment) is True
 
 
 def test_global_read_only_without_zones():
